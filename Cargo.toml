@@ -1,0 +1,35 @@
+[package]
+name = "internet_routes"
+version = "0.1.0"
+authors = ["Igor Valet <igor_valet@hotmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pnet = "0.27"
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "fs", "io-util"] }
+
+[[bin]]
+name = "list_route_nodes"
+path = "src/run_list_route_nodes.rs"
+
+[[bin]]
+name = "measure_route"
+path = "src/run_measure_route.rs"
+
+[[bin]]
+name = "traceroute"
+path = "src/run_traceroute.rs"
+
+[[bin]]
+name = "ping"
+path = "src/run_ping.rs"
+
+[[bin]]
+name = "ping_scan"
+path = "src/app_ping_scan.rs"
+
+[[bin]]
+name = "read_ping_scan"
+path = "src/app_read_ping_scan.rs"
