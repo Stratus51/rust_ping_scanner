@@ -5,16 +5,82 @@ mod u32_sampling_iterator;
 
 use configuration::Configuration;
 use internet::u32_to_ip;
+use std::convert::TryInto;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
-pub fn decode_result(data: [u8; 4]) -> Option<Duration> {
-    let val = u32::from_le_bytes(data);
-    if val == 0 {
-        None
-    } else {
-        Some(Duration::from_nanos(val as u64 * 10))
+fn read_le_u32(input: &mut &[u8]) -> u32 {
+    let (int_bytes, rest) = input.split_at(std::mem::size_of::<u32>());
+    *input = rest;
+    u32::from_le_bytes(int_bytes.try_into().unwrap())
+}
+
+pub fn decode_result(mut data: &[u8]) -> (u32, Duration) {
+    let index = read_le_u32(&mut data);
+    let latency = read_le_u32(&mut data);
+    (index, Duration::from_nanos(latency as u64 * 10))
+}
+
+pub struct IteratorCherryPick<Iter: Iterator<Item = u32>> {
+    iter: Iter,
+    index: u32,
+    buffer: Vec<(u32, u32)>,
+}
+
+impl<Iter> IteratorCherryPick<Iter>
+where
+    Iter: Iterator<Item = u32>,
+{
+    fn new(iter: Iter) -> Self {
+        Self {
+            iter,
+            index: 0,
+            buffer: vec![],
+        }
+    }
+
+    fn pump_data(&mut self, n: u32) -> bool {
+        for _ in 0..n {
+            let value = match self.iter.next() {
+                Some(value) => value,
+                None => return false,
+            };
+            self.buffer.push((self.index, value));
+            self.index += 1;
+        }
+        true
+    }
+
+    fn get(&mut self, index: u32) -> u32 {
+        let min_index = if self.buffer.is_empty() {
+            self.index
+        } else {
+            self.buffer[0].0
+        };
+        if index < min_index {
+            panic!("Data index call for data already called.");
+        }
+
+        let max_index = if self.buffer.is_empty() {
+            self.index
+        } else {
+            self.buffer.last().unwrap().0
+        };
+        if index >= max_index {
+            let missing = index + 1 - max_index;
+            self.pump_data(missing);
+            self.buffer.remove(self.buffer.len() - 1).1
+        } else {
+            let value = match self.buffer.iter().find(|(i, _)| *i == index) {
+                Some(value) => value.1,
+                None => panic!(
+                    "Could not find value in buffer even though it was supposed to be in it ({} < {} < {}).\
+                    Did the index get called twice?", self.buffer.first().unwrap().0, index, self.buffer.first().unwrap().1
+                ),
+            };
+            value
+        }
     }
 }
 
@@ -47,13 +113,12 @@ async fn main() {
         .seek(std::io::SeekFrom::Start(conf_size as u64))
         .await
         .unwrap();
-    let mut iterator = conf.iterator.generate();
-    let mut buffer = [0u8; 4];
+    let iterator = conf.iterator.generate();
+    let mut iterator_db = IteratorCherryPick::new(iterator);
+    let mut buffer = [0u8; 8];
     while in_file.read_exact(&mut buffer).await.is_ok() {
-        println!(
-            "{} => {:?}",
-            u32_to_ip(iterator.next().unwrap()),
-            decode_result(buffer)
-        );
+        let (index, latency) = decode_result(&buffer);
+        let addr = u32_to_ip(iterator_db.get(index));
+        println!("{:>width$} => {:?}", addr, latency, width = 15);
     }
 }

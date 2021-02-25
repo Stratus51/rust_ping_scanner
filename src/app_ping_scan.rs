@@ -12,23 +12,25 @@ use tokio::sync::mpsc;
 
 pub async fn run_pinger(
     pinger: Pinger,
+    index: u32,
     target: u32,
     ttl: u8,
-    response_tx: mpsc::Sender<Option<Duration>>,
+    response_tx: mpsc::Sender<(u32, Option<Duration>)>,
 ) {
-    let _ = response_tx
-        .send(match pinger.ping(u32_to_ip(target), ttl).await {
-            ping::PingResult::Ok(latency) => Some(latency),
-            _ => None,
-        })
-        .await;
+    let res = match pinger.ping(u32_to_ip(target), ttl).await {
+        ping::PingResult::Ok(latency) => Some(latency),
+        _ => None,
+    };
+    let _ = response_tx.send((index, res)).await;
 }
 
-pub fn encode_result(result: Option<Duration>) -> [u8; 4] {
-    match result {
-        Some(duration) => ((duration.as_nanos() / 10) as u32).to_le_bytes(),
-        None => [0, 0, 0, 0],
-    }
+pub fn encode_result(index: u32, duration: Duration) -> Box<[u8]> {
+    [
+        index.to_le_bytes(),
+        ((duration.as_nanos() / 10) as u32).to_le_bytes(),
+    ]
+    .concat()
+    .into()
 }
 
 pub async fn scan(conf: Configuration) {
@@ -52,9 +54,15 @@ pub async fn scan(conf: Configuration) {
     // Start first thread batch
     println!("Starting first ping batch");
     let mut parallel = 0;
-    for _ in 0..parallelism {
+    for i in 0..parallelism {
         if let Some(target) = iterator.next() {
-            tokio::spawn(run_pinger(pinger.clone(), target, ttl, tx.clone()));
+            tokio::spawn(run_pinger(
+                pinger.clone(),
+                i as u32,
+                target,
+                ttl,
+                tx.clone(),
+            ));
             parallel += 1;
         } else {
             break;
@@ -66,11 +74,11 @@ pub async fn scan(conf: Configuration) {
     let mut out_data = vec![];
     let mut i = 0;
     let start = Instant::now();
-    while let Some(result) = rx.recv().await {
+    while let Some((index, result)) = rx.recv().await {
         // Print progress
         i += 1;
-        let percent = 100 * i / conf.iterator.nb;
-        if percent > (100 * (i - 1) / conf.iterator.nb) {
+        let percent = 100 * (i as u64) / conf.iterator.nb as u64;
+        if percent > (100 * (i as u64 - 1) / conf.iterator.nb as u64) {
             println!(
                 "{}% after {:?}",
                 percent,
@@ -79,15 +87,23 @@ pub async fn scan(conf: Configuration) {
         }
 
         // Process result
-        out_data.push(encode_result(result));
-        if out_data.len() > 1000000 {
-            out_file.write_all(&out_data.concat()).await.unwrap();
-            out_data.clear();
+        if let Some(result) = result {
+            out_data.push(encode_result(index, result));
+            if out_data.len() > 10 * parallelism {
+                out_file.write_all(&out_data.concat()).await.unwrap();
+                out_data.clear();
+            }
         }
 
         // Schedule next target
         if let Some(target) = iterator.next() {
-            tokio::spawn(run_pinger(pinger.clone(), target, ttl, tx.clone()));
+            tokio::spawn(run_pinger(
+                pinger.clone(),
+                parallel + i,
+                target,
+                ttl,
+                tx.clone(),
+            ));
         } else {
             parallel -= 1;
             if parallel == 0 {

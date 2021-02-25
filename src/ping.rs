@@ -154,12 +154,27 @@ impl PingerBackend {
                             },
                         ));
                     } else {
-                        let packet =
-                            icmp::time_exceeded::TimeExceededPacket::new(packet.packet()).unwrap();
-                        let ipv4_packet =
-                            pnet::packet::ipv4::Ipv4Packet::new(packet.payload()).unwrap();
-                        let icmp_packet =
-                            echo_request::EchoRequestPacket::new(ipv4_packet.payload()).unwrap();
+                        let packet = if let Some(packet) =
+                            icmp::time_exceeded::TimeExceededPacket::new(packet.packet())
+                        {
+                            packet
+                        } else {
+                            continue;
+                        };
+                        let ipv4_packet = if let Some(packet) =
+                            pnet::packet::ipv4::Ipv4Packet::new(packet.payload())
+                        {
+                            packet
+                        } else {
+                            continue;
+                        };
+                        let icmp_packet = if let Some(packet) =
+                            echo_request::EchoRequestPacket::new(ipv4_packet.payload())
+                        {
+                            packet
+                        } else {
+                            continue;
+                        };
 
                         let id = PingIdentifier {
                             responder: addr,
@@ -212,6 +227,7 @@ impl PingerBackend {
         let mut index = 0x42_42_42_42u32;
         let mut timer_running = false;
         let mut ongoing = BTreeMap::new();
+        let mut last_ttl = 0;
 
         while let Some(input) = command_rx.recv().await {
             match input {
@@ -225,13 +241,15 @@ impl PingerBackend {
                     let csum = pnet::util::checksum(echo_packet.packet(), 1);
                     echo_packet.set_checksum(csum);
 
-                    tx.set_ttl(request.ttl).unwrap();
+                    if request.ttl != last_ttl {
+                        tx.set_ttl(request.ttl).unwrap();
+                        last_ttl = request.ttl;
+                    }
                     if tx.send_to(echo_packet, request.addr).is_err() {
                         // TODO Signal error?
-                        request
+                        let _ = request
                             .response_channel
-                            .send(PingResult::FailedToSendPacket)
-                            .unwrap();
+                            .send(PingResult::FailedToSendPacket);
                     } else {
                         ongoing.insert(
                             index,
@@ -250,37 +268,43 @@ impl PingerBackend {
                 Input::PingResponse(response) => {
                     let index = (response.id as u32) << 16 | (response.sn as u32);
                     if let Some(ongoing) = ongoing.remove(&index) {
-                        ongoing
-                            .response_channel
-                            .send(PingResult::Ok(response.stop.duration_since(ongoing.start)))
-                            .unwrap()
+                        let duration = if response.stop > ongoing.start {
+                            response.stop.duration_since(ongoing.start)
+                        } else {
+                            Duration::from_nanos(10)
+                        };
+                        let _ = ongoing.response_channel.send(PingResult::Ok(duration));
                     }
                 }
                 Input::PingTimeExceeded(response) => {
                     let index = (response.id as u32) << 16 | (response.sn as u32);
                     if let Some(ongoing) = ongoing.remove(&index) {
-                        ongoing
-                            .response_channel
-                            .send(PingResult::TimeExceeded {
-                                addr: response.responder,
-                                latency: response.stop.duration_since(ongoing.start),
-                            })
-                            .unwrap()
+                        let latency = if response.stop > ongoing.start {
+                            response.stop.duration_since(ongoing.start)
+                        } else {
+                            Duration::from_nanos(10)
+                        };
+                        let _ = ongoing.response_channel.send(PingResult::TimeExceeded {
+                            addr: response.responder,
+                            latency,
+                        });
                     }
                 }
                 Input::IcmpError { id, code, ty, data } => {
                     let index = (id.id as u32) << 16 | (id.sn as u32);
                     if let Some(ongoing) = ongoing.remove(&index) {
-                        ongoing
-                            .response_channel
-                            .send(PingResult::IcmpError {
-                                ty,
-                                code,
-                                data,
-                                responder: id.responder,
-                                latency: id.stop.duration_since(ongoing.start),
-                            })
-                            .unwrap()
+                        let latency = if id.stop > ongoing.start {
+                            id.stop.duration_since(ongoing.start)
+                        } else {
+                            Duration::from_nanos(10)
+                        };
+                        let _ = ongoing.response_channel.send(PingResult::IcmpError {
+                            ty,
+                            code,
+                            data,
+                            responder: id.responder,
+                            latency,
+                        });
                     }
                 }
                 Input::Timeout => {
@@ -292,7 +316,7 @@ impl PingerBackend {
                         .collect();
                     for k in lost.into_iter() {
                         let v = ongoing.remove(&k).unwrap();
-                        v.response_channel.send(PingResult::Timeout).unwrap();
+                        let _ = v.response_channel.send(PingResult::Timeout);
                     }
                     if !ongoing.is_empty() {
                         let earliest_start = ongoing.values().map(|v| v.start).min().unwrap();

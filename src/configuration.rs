@@ -105,15 +105,52 @@ impl PingConfiguration {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IteratorType {
-    SamplingIterator = 0,
-    SequentialIterator = 1,
+    Sampling = 0,
+    Sequential = 1,
+    Periodic = 2,
+    ReverseEndianSequential = 3,
+    // TODO Add AES based iterator
+}
+
+pub struct PeriodicIterator {
+    index: u32,
+    period: u32,
+    nb_period: u32,
+    offset: u32,
+}
+
+impl Iterator for PeriodicIterator {
+    type Item = u32;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.index += 1;
+        if self.index >= self.nb_period {
+            self.index = 0;
+            self.offset += 1;
+
+            if self.offset >= self.period {
+                return None;
+            }
+        }
+        Some(self.offset + self.index * self.period)
+    }
 }
 
 impl IteratorType {
+    pub fn from_str(s: &str) -> Result<Self, ()> {
+        Ok(match s {
+            "sampling" => Self::Sampling,
+            "sequential" => Self::Sequential,
+            "periodic" => Self::Periodic,
+            "reverse_endian" => Self::ReverseEndianSequential,
+            _ => return Err(()),
+        })
+    }
     pub fn from_u8(n: u8) -> Result<Self, ()> {
         Ok(match n {
-            0 => Self::SamplingIterator,
-            1 => Self::SequentialIterator,
+            0 => Self::Sampling,
+            1 => Self::Sequential,
+            2 => Self::Periodic,
+            3 => Self::ReverseEndianSequential,
             _ => return Err(()),
         })
     }
@@ -127,12 +164,12 @@ pub struct IteratorConfiguration {
 }
 impl IteratorConfiguration {
     pub fn from_args(args: &[String]) -> Result<Self, String> {
-        let ty: u8 = field_from_args(args, "--iterator_type")?;
+        let ty: String = field_from_args(args, "--iterator_type")?;
         let offset: u32 = field_from_args(args, "--iterator_offset")?;
         let nb: u32 = field_from_args(args, "--iterator_nb")?;
 
         Ok(Self {
-            ty: IteratorType::from_u8(ty).map_err(|_| format!("Unknown iterator_type {}", ty))?,
+            ty: IteratorType::from_str(&ty).map_err(|_| format!("Unknown iterator_type {}", ty))?,
             offset,
             nb,
         })
@@ -174,14 +211,32 @@ impl IteratorConfiguration {
 
     pub fn generate(&self) -> Box<dyn Iterator<Item = u32>> {
         match self.ty {
-            IteratorType::SamplingIterator => Box::new(
+            IteratorType::Sampling => Box::new(
                 U32SamplingIterator::new(0, 0, u32_sampling_iterator::MAX_DEPTH)
                     .filter(ip_is_valid)
                     .skip(self.offset as usize)
                     .take(self.nb as usize),
             ),
-            IteratorType::SequentialIterator => Box::new(
+            IteratorType::Sequential => Box::new(
                 (0u32..0xFF_FF_FF_FF)
+                    .filter(ip_is_valid)
+                    .skip(self.offset as usize)
+                    .take(self.nb as usize),
+            ),
+            IteratorType::Periodic => Box::new(
+                PeriodicIterator {
+                    period: 256,
+                    nb_period: 0xFF_FF_FF,
+                    index: 0,
+                    offset: 0,
+                }
+                .filter(ip_is_valid)
+                .skip(self.offset as usize)
+                .take(self.nb as usize),
+            ),
+            IteratorType::ReverseEndianSequential => Box::new(
+                (0u32..0xFF_FF_FF_FF)
+                    .map(|n| u32::from_be_bytes(n.to_le_bytes()))
                     .filter(ip_is_valid)
                     .skip(self.offset as usize)
                     .take(self.nb as usize),
@@ -277,7 +332,7 @@ mod test {
 
         check(Configuration {
             iterator: IteratorConfiguration {
-                ty: IteratorType::SamplingIterator,
+                ty: IteratorType::Sampling,
                 offset: 42,
                 nb: 99,
             },
@@ -292,7 +347,7 @@ mod test {
 
         check(Configuration {
             iterator: IteratorConfiguration {
-                ty: IteratorType::SequentialIterator,
+                ty: IteratorType::Sequential,
                 offset: 0,
                 nb: 0xFF_FF_FF_FF,
             },
