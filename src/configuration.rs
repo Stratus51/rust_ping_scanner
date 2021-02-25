@@ -121,9 +121,9 @@ impl IteratorType {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IteratorConfiguration {
-    ty: IteratorType,
-    offset: u32,
-    nb: u32,
+    pub ty: IteratorType,
+    pub offset: u32,
+    pub nb: u32,
 }
 impl IteratorConfiguration {
     pub fn from_args(args: &[String]) -> Result<Self, String> {

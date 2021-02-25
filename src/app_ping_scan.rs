@@ -6,7 +6,7 @@ mod u32_sampling_iterator;
 use configuration::Configuration;
 use internet::u32_to_ip;
 use ping::Pinger;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
@@ -64,8 +64,20 @@ pub async fn scan(conf: Configuration) {
     // Consume data iterator
     println!("Running");
     let mut out_data = vec![];
+    let mut i = 0;
+    let start = Instant::now();
     while let Some(result) = rx.recv().await {
-        println!("Ping: {:?}", result);
+        // Print progress
+        i += 1;
+        let percent = 100 * i / conf.iterator.nb;
+        if percent > (100 * (i - 1) / conf.iterator.nb) {
+            println!(
+                "{}% after {:?}",
+                percent,
+                Instant::now().duration_since(start)
+            );
+        }
+
         // Process result
         out_data.push(encode_result(result));
         if out_data.len() > 1000000 {
