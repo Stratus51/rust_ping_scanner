@@ -1,12 +1,12 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
-pub fn u32_to_ip(n: u32) -> IpAddr {
-    IpAddr::V4(Ipv4Addr::new(
+pub fn u32_to_ip(n: u32) -> Ipv4Addr {
+    Ipv4Addr::new(
         (n >> 24) as u8,
         ((n >> 16) & 0xFF) as u8,
         ((n >> 8) & 0xFF) as u8,
         (n & 0xFF) as u8,
-    ))
+    )
 }
 
 pub fn ip_is_valid(ip: &u32) -> bool {

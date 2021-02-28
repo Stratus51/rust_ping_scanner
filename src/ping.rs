@@ -9,6 +9,7 @@ use pnet::transport::TransportProtocol::Ipv4;
 use pnet::transport::{TransportReceiver, TransportSender};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -16,7 +17,8 @@ use tokio::sync::oneshot;
 #[derive(Debug)]
 pub struct PingRequest {
     ttl: u8,
-    addr: IpAddr,
+    addr: Ipv4Addr,
+    id_shift: Option<u16>,
     response_channel: oneshot::Sender<PingResult>,
 }
 
@@ -25,13 +27,13 @@ pub enum PingResult {
     Ok(Duration),
     Timeout,
     TimeExceeded {
-        addr: IpAddr,
+        addr: Ipv4Addr,
         latency: Duration,
     },
     FailedToSendPacket,
     BackendClosed,
     IcmpError {
-        responder: IpAddr,
+        responder: Ipv4Addr,
         code: icmp::IcmpCode,
         ty: icmp::IcmpType,
         data: Box<[u8]>,
@@ -47,10 +49,11 @@ pub struct OngoingRequest {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PingIdentifier {
-    responder: IpAddr,
+    responder: Ipv4Addr,
     id: u16,
     sn: u16,
     stop: Instant,
+    destination: Ipv4Addr,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +143,10 @@ impl PingerBackend {
         loop {
             match iter.next() {
                 Ok((packet, addr)) => {
+                    let addr = match addr {
+                        IpAddr::V4(addr) => addr,
+                        _ => continue,
+                    };
                     let command;
                     if packet.get_icmp_type() == icmp::IcmpTypes::EchoReply {
                         let packet =
@@ -148,6 +155,7 @@ impl PingerBackend {
                             PingRequestResponse::PingResponse,
                             PingIdentifier {
                                 responder: addr,
+                                destination: addr,
                                 id: packet.get_identifier(),
                                 sn: packet.get_sequence_number(),
                                 stop: Instant::now(),
@@ -180,6 +188,7 @@ impl PingerBackend {
                             responder: addr,
                             id: icmp_packet.get_identifier(),
                             sn: icmp_packet.get_sequence_number(),
+                            destination: ipv4_packet.get_destination(),
                             stop: Instant::now(),
                         };
 
@@ -224,7 +233,7 @@ impl PingerBackend {
             command_tx,
             mut tx,
         } = self;
-        let mut index = 0x42_42_42_42u32;
+        let mut index = 0u16;
         let mut timer_running = false;
         let mut ongoing = BTreeMap::new();
         let mut last_ttl = 0;
@@ -235,8 +244,13 @@ impl PingerBackend {
                     let mut vec: Vec<u8> = vec![0; size];
                     let mut echo_packet =
                         echo_request::MutableEchoRequestPacket::new(&mut vec[..]).unwrap();
-                    echo_packet.set_identifier((index >> 16) as u16);
-                    echo_packet.set_sequence_number((index & 0xFF_FF) as u16);
+                    let id = match request.id_shift {
+                        Some(shift) => ((index as u32 + shift as u32) % 0x1_00_00) as u16,
+                        None => index,
+                    };
+                    let sn = 0xFF_FF - index;
+                    echo_packet.set_identifier(id);
+                    echo_packet.set_sequence_number(sn);
                     echo_packet.set_icmp_type(icmp::IcmpTypes::EchoRequest);
                     let csum = pnet::util::checksum(echo_packet.packet(), 1);
                     echo_packet.set_checksum(csum);
@@ -245,14 +259,14 @@ impl PingerBackend {
                         tx.set_ttl(request.ttl).unwrap();
                         last_ttl = request.ttl;
                     }
-                    if tx.send_to(echo_packet, request.addr).is_err() {
+                    if tx.send_to(echo_packet, IpAddr::V4(request.addr)).is_err() {
                         // TODO Signal error?
                         let _ = request
                             .response_channel
                             .send(PingResult::FailedToSendPacket);
                     } else {
                         ongoing.insert(
-                            index,
+                            (request.addr, id),
                             OngoingRequest {
                                 start: Instant::now(),
                                 response_channel: request.response_channel,
@@ -266,8 +280,7 @@ impl PingerBackend {
                     }
                 }
                 Input::PingResponse(response) => {
-                    let index = (response.id as u32) << 16 | (response.sn as u32);
-                    if let Some(ongoing) = ongoing.remove(&index) {
+                    if let Some(ongoing) = ongoing.remove(&(response.destination, response.id)) {
                         let duration = if response.stop > ongoing.start {
                             response.stop.duration_since(ongoing.start)
                         } else {
@@ -277,8 +290,7 @@ impl PingerBackend {
                     }
                 }
                 Input::PingTimeExceeded(response) => {
-                    let index = (response.id as u32) << 16 | (response.sn as u32);
-                    if let Some(ongoing) = ongoing.remove(&index) {
+                    if let Some(ongoing) = ongoing.remove(&(response.destination, response.id)) {
                         let latency = if response.stop > ongoing.start {
                             response.stop.duration_since(ongoing.start)
                         } else {
@@ -291,8 +303,7 @@ impl PingerBackend {
                     }
                 }
                 Input::IcmpError { id, code, ty, data } => {
-                    let index = (id.id as u32) << 16 | (id.sn as u32);
-                    if let Some(ongoing) = ongoing.remove(&index) {
+                    if let Some(ongoing) = ongoing.remove(&(id.destination, id.id)) {
                         let latency = if id.stop > ongoing.start {
                             id.stop.duration_since(ongoing.start)
                         } else {
@@ -345,11 +356,30 @@ impl Pinger {
         Ok(Self { command_tx })
     }
 
-    pub async fn ping(&self, addr: IpAddr, ttl: u8) -> PingResult {
+    pub async fn ping(&self, addr: Ipv4Addr, ttl: u8) -> PingResult {
         let (tx, rx) = oneshot::channel();
         if self
             .command_tx
             .send(Input::PingRequest(PingRequest {
+                id_shift: None,
+                addr,
+                ttl,
+                response_channel: tx,
+            }))
+            .await
+            .is_err()
+        {
+            return PingResult::BackendClosed;
+        }
+        rx.await.unwrap_or(PingResult::BackendClosed)
+    }
+
+    pub async fn ping_with_id_shift(&self, addr: Ipv4Addr, ttl: u8, id_shift: u16) -> PingResult {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(Input::PingRequest(PingRequest {
+                id_shift: Some(id_shift),
                 addr,
                 ttl,
                 response_channel: tx,

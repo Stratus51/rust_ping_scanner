@@ -77,11 +77,11 @@ pub async fn scan(conf: Configuration) {
     while let Some((index, result)) = rx.recv().await {
         // Print progress
         i += 1;
-        let percent = 100 * (i as u64) / conf.iterator.nb as u64;
-        if percent > (100 * (i as u64 - 1) / conf.iterator.nb as u64) {
+        let percent = 1000 * (i as u64) / conf.iterator.nb as u64;
+        if percent > (1000 * (i as u64 - 1) / conf.iterator.nb as u64) {
             println!(
                 "{}% after {:?}",
-                percent,
+                percent as f32 / 10.0,
                 Instant::now().duration_since(start)
             );
         }

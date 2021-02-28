@@ -5,6 +5,8 @@ use crate::u32_sampling_iterator::U32SamplingIterator;
 use std::convert::TryInto;
 use std::time::Duration;
 
+// TODO Do something JSON based instead
+
 fn field_from_args<T: std::str::FromStr>(args: &[String], field_name: &str) -> Result<T, String>
 where
     <T as std::str::FromStr>::Err: std::fmt::Debug,

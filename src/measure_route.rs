@@ -1,11 +1,11 @@
 use crate::ping::{PingResult, Pinger};
-use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct RouteNode {
-    addr: IpAddr,
+    addr: Ipv4Addr,
     latency: Duration,
 }
 
@@ -37,7 +37,7 @@ pub enum Error {
 
 async fn ttl_stats(
     pinger: &Pinger,
-    addr: IpAddr,
+    addr: Ipv4Addr,
     ttl: u8,
     nb_retries: u8,
     tx: mpsc::Sender<Result<RouteMeasureData, Error>>,
@@ -78,7 +78,7 @@ async fn ttl_stats(
 
 pub async fn measure_route_to_channel(
     pinger: Pinger,
-    addr: IpAddr,
+    addr: Ipv4Addr,
     max_ttl: u8,
     stats_retries: u8,
     tx: mpsc::Sender<Result<RouteMeasureData, Error>>,
@@ -187,7 +187,7 @@ pub async fn measure_route_to_channel(
 
 pub fn measure_route(
     pinger: Pinger,
-    addr: IpAddr,
+    addr: Ipv4Addr,
     max_ttl: u8,
     stats_retries: u8,
 ) -> mpsc::Receiver<Result<RouteMeasureData, Error>> {
