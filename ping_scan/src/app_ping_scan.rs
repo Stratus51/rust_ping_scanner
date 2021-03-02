@@ -18,6 +18,7 @@ enum Event {
     },
     LinkUp,
     LinkDown,
+    CpuUsage(f32),
 }
 
 async fn run_pinger(
@@ -49,6 +50,10 @@ pub fn encode_result(index: u32, duration: Duration) -> Box<[u8]> {
     .into()
 }
 
+// TODO sys_info::loadavg
+async fn monitor_cpu_usage(response_tx: mpsc::Sender<Event>, mut end: oneshot::Receiver<()>) {}
+
+// TODO
 async fn monitor_link(
     pinger: Pinger,
     target: Ipv4Addr,
@@ -104,6 +109,7 @@ pub async fn scan(conf: Configuration) {
         }
     }
 
+    // TODO Adapt load to current CPU usage
     // Consume data iterator
     println!("Running");
     let mut out_data = vec![];
