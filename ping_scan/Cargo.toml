@@ -1,0 +1,20 @@
+[package]
+name = "ping_scan"
+version = "0.1.0"
+authors = ["Igor Valet <igor_valet@hotmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio_ip_ping_request = { path = "../tokio_ip_ping_request" }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "fs", "io-util"] }
+sys-info = "0.8"
+
+[[bin]]
+name = "ping_scan"
+path = "src/app_ping_scan.rs"
+
+[[bin]]
+name = "read_ping_scan"
+path = "src/app_read_ping_scan.rs"

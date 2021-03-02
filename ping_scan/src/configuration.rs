@@ -1,11 +1,15 @@
 use crate::internet::ip_is_valid;
-use crate::ping::Pinger;
+use crate::ping::icmp::Pinger;
 use crate::u32_sampling_iterator;
 use crate::u32_sampling_iterator::U32SamplingIterator;
 use std::convert::TryInto;
 use std::time::Duration;
 
+// TODO Add start date
+// TODO Add source IP
 // TODO Do something JSON based instead
+// TODO Add first byte as version on u8 (for cross version compatible parser/converter)
+// TODO Add conf length on first u32 to be able to skip config, for simpler parsers
 
 fn field_from_args<T: std::str::FromStr>(args: &[String], field_name: &str) -> Result<T, String>
 where
@@ -100,7 +104,7 @@ impl PingConfiguration {
     }
 
     pub fn generate(&self) -> Result<Pinger, String> {
-        Pinger::new(self.timeout, self.size, self.parallelism as usize)
+        Pinger::new(self.size, self.parallelism as usize)
             .map_err(|e| format!("Failed to generate pinger: {:?}", e))
     }
 }

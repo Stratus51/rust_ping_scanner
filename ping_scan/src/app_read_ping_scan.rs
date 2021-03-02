@@ -1,6 +1,5 @@
 mod configuration;
 mod internet;
-mod ping;
 mod u32_sampling_iterator;
 
 use configuration::Configuration;
@@ -9,6 +8,7 @@ use std::convert::TryInto;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
+use tokio_ip_ping_request::ping;
 
 fn read_le_u32(input: &mut &[u8]) -> u32 {
     let (int_bytes, rest) = input.split_at(std::mem::size_of::<u32>());

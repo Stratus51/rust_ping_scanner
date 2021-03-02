@@ -1,4 +1,5 @@
-use crate::ping::{PingResult, Pinger};
+use crate::ping::icmp;
+pub use crate::ping::PingError;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -28,30 +29,25 @@ pub enum RouteMeasureData {
     Result(RouteMeasureResult),
 }
 
-#[derive(Debug)]
-pub enum Error {
-    TimeExceeded,
-    Timeout,
-    Other(PingResult),
-}
-
-async fn ttl_stats(
-    pinger: &Pinger,
+async fn icmp_ttl_stats(
+    pinger: &icmp::Pinger,
     addr: Ipv4Addr,
     ttl: u8,
+    timeout: Duration,
+    flow_id: u16,
     nb_retries: u8,
-    tx: mpsc::Sender<Result<RouteMeasureData, Error>>,
+    tx: mpsc::Sender<Result<RouteMeasureData, PingError>>,
 ) -> Result<u8, ()> {
     let mut ret = 0;
     for _ in 0..nb_retries {
-        match pinger.ping(addr, ttl).await {
-            PingResult::Ok(latency) => {
+        match pinger.ping(addr, ttl, timeout, flow_id).await {
+            Ok(latency) => {
                 if tx.send(Ok(RouteMeasureData::Ping(latency))).await.is_err() {
                     return Err(());
                 }
                 ret += 1;
             }
-            PingResult::TimeExceeded { addr, latency } => {
+            Err(PingError::TimeExceeded { addr, latency }) => {
                 if tx
                     .send(Ok(RouteMeasureData::TimeExceeded(RouteNode {
                         addr,
@@ -63,12 +59,12 @@ async fn ttl_stats(
                     return Err(());
                 }
             }
-            PingResult::Timeout => {
-                let _ = tx.send(Err(Error::Timeout)).await;
+            Err(PingError::Timeout) => {
+                let _ = tx.send(Err(PingError::Timeout)).await;
                 return Err(());
             }
-            error => {
-                let _ = tx.send(Err(Error::Other(error))).await;
+            Err(error) => {
+                let _ = tx.send(Err(error)).await;
                 return Err(());
             }
         }
@@ -76,30 +72,24 @@ async fn ttl_stats(
     Ok(ret)
 }
 
-pub async fn measure_route_to_channel(
-    pinger: Pinger,
+pub async fn icmp_measure_route_to_channel(
+    pinger: icmp::Pinger,
     addr: Ipv4Addr,
     max_ttl: u8,
+    timeout: Duration,
+    flow_id: u16,
     stats_retries: u8,
-    tx: mpsc::Sender<Result<RouteMeasureData, Error>>,
+    tx: mpsc::Sender<Result<RouteMeasureData, PingError>>,
 ) {
     // Check that the target is reachable
-    match pinger.ping(addr, max_ttl).await {
-        PingResult::Ok(latency) => {
+    match pinger.ping(addr, max_ttl, timeout, flow_id).await {
+        Ok(latency) => {
             if tx.send(Ok(RouteMeasureData::Ping(latency))).await.is_err() {
                 return;
             }
         }
-        PingResult::TimeExceeded { .. } => {
-            let _ = tx.send(Err(Error::TimeExceeded)).await;
-            return;
-        }
-        PingResult::Timeout => {
-            let _ = tx.send(Err(Error::Timeout)).await;
-            return;
-        }
-        error => {
-            let _ = tx.send(Err(Error::Other(error))).await;
+        Err(error) => {
+            let _ = tx.send(Err(error)).await;
             return;
         }
     }
@@ -108,15 +98,15 @@ pub async fn measure_route_to_channel(
     let mut diff = max_ttl / 2;
     let mut distance = max_ttl - diff;
     while diff > 0 {
-        match pinger.ping(addr, distance).await {
-            PingResult::Ok(latency) => {
+        match pinger.ping(addr, distance, timeout, flow_id).await {
+            Ok(latency) => {
                 if tx.send(Ok(RouteMeasureData::Ping(latency))).await.is_err() {
                     return;
                 }
                 diff /= 2;
                 distance -= diff;
             }
-            PingResult::TimeExceeded { addr, latency } => {
+            Err(PingError::TimeExceeded { addr, latency }) => {
                 if tx
                     .send(Ok(RouteMeasureData::TimeExceeded(RouteNode {
                         addr,
@@ -133,12 +123,8 @@ pub async fn measure_route_to_channel(
                 }
                 distance += diff;
             }
-            PingResult::Timeout => {
-                let _ = tx.send(Err(Error::Timeout)).await;
-                return;
-            }
-            error => {
-                let _ = tx.send(Err(Error::Other(error))).await;
+            Err(error) => {
+                let _ = tx.send(Err(error)).await;
                 return;
             }
         }
@@ -151,7 +137,17 @@ pub async fn measure_route_to_channel(
     // Catch upper ttl limit
     let mut ttl = distance;
     while stat < stats_retries && ttl <= max_ttl {
-        stat = match ttl_stats(&pinger, addr, ttl, stats_retries, tx.clone()).await {
+        stat = match icmp_ttl_stats(
+            &pinger,
+            addr,
+            ttl,
+            timeout,
+            flow_id,
+            stats_retries,
+            tx.clone(),
+        )
+        .await
+        {
             Err(_) => return,
             Ok(stat) => stat,
         };
@@ -163,7 +159,17 @@ pub async fn measure_route_to_channel(
     let mut ttl = distance - 1;
     stat = 1;
     while stat > 0 && ttl > 0 {
-        stat = match ttl_stats(&pinger, addr, ttl - 1, stats_retries, tx.clone()).await {
+        stat = match icmp_ttl_stats(
+            &pinger,
+            addr,
+            ttl - 1,
+            timeout,
+            flow_id,
+            stats_retries,
+            tx.clone(),
+        )
+        .await
+        {
             Err(_) => return,
             Ok(stat) => stat,
         };
@@ -185,17 +191,21 @@ pub async fn measure_route_to_channel(
     .await;
 }
 
-pub fn measure_route(
-    pinger: Pinger,
+pub fn icmp_measure_route(
+    pinger: icmp::Pinger,
     addr: Ipv4Addr,
     max_ttl: u8,
+    timeout: Duration,
+    flow_id: u16,
     stats_retries: u8,
-) -> mpsc::Receiver<Result<RouteMeasureData, Error>> {
+) -> mpsc::Receiver<Result<RouteMeasureData, PingError>> {
     let (tx, rx) = mpsc::channel(5);
-    tokio::spawn(measure_route_to_channel(
+    tokio::spawn(icmp_measure_route_to_channel(
         pinger,
         addr,
         max_ttl,
+        timeout,
+        flow_id,
         stats_retries,
         tx,
     ));

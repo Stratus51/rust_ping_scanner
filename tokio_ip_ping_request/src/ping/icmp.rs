@@ -14,37 +14,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-#[derive(Debug)]
-pub struct PingRequest {
-    ttl: u8,
-    addr: Ipv4Addr,
-    id_shift: Option<u16>,
-    response_channel: oneshot::Sender<PingResult>,
-}
-
-#[derive(Debug, Clone)]
-pub enum PingResult {
-    Ok(Duration),
-    Timeout,
-    TimeExceeded {
-        addr: Ipv4Addr,
-        latency: Duration,
-    },
-    FailedToSendPacket,
-    BackendClosed,
-    IcmpError {
-        responder: Ipv4Addr,
-        code: icmp::IcmpCode,
-        ty: icmp::IcmpType,
-        data: Box<[u8]>,
-        latency: Duration,
-    },
-}
+use super::*;
 
 #[derive(Debug)]
 pub struct OngoingRequest {
     start: Instant,
-    response_channel: oneshot::Sender<PingResult>,
+    stop: Instant,
+    response_channel: oneshot::Sender<Result<Duration, PingError>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,7 +75,6 @@ pub enum Input {
 }
 
 pub struct PingerBackend {
-    max_rtt: Duration,
     // Size in bytes of the payload to send.  Default is 16 bytes
     size: usize,
     // Request reception
@@ -112,7 +87,6 @@ pub struct PingerBackend {
 
 impl PingerBackend {
     pub fn start(
-        max_rtt: Duration,
         size: u16,
         command_rx: mpsc::Receiver<Input>,
         command_tx: mpsc::Sender<Input>,
@@ -128,7 +102,6 @@ impl PingerBackend {
         std::thread::spawn(move || Self::run_ip_listener(rx, listener_tx));
 
         let backend = Self {
-            max_rtt,
             size: size as usize,
             command_rx,
             command_tx,
@@ -227,7 +200,6 @@ impl PingerBackend {
 
     async fn run(self) {
         let Self {
-            max_rtt,
             size,
             mut command_rx,
             command_tx,
@@ -244,10 +216,7 @@ impl PingerBackend {
                     let mut vec: Vec<u8> = vec![0; size];
                     let mut echo_packet =
                         echo_request::MutableEchoRequestPacket::new(&mut vec[..]).unwrap();
-                    let id = match request.id_shift {
-                        Some(shift) => ((index as u32 + shift as u32) % 0x1_00_00) as u16,
-                        None => index,
-                    };
+                    let id = ((index as u32 + request.flow_id as u32) % 0x1_00_00) as u16;
                     let sn = 0xFF_FF - index;
                     echo_packet.set_identifier(id);
                     echo_packet.set_sequence_number(sn);
@@ -263,18 +232,20 @@ impl PingerBackend {
                         // TODO Signal error?
                         let _ = request
                             .response_channel
-                            .send(PingResult::FailedToSendPacket);
+                            .send(Err(PingError::FailedToSendPacket));
                     } else {
+                        let start = Instant::now();
                         ongoing.insert(
                             (request.addr, id),
                             OngoingRequest {
-                                start: Instant::now(),
+                                start,
+                                stop: start + request.timeout,
                                 response_channel: request.response_channel,
                             },
                         );
                         index += 1;
                         if !timer_running {
-                            tokio::spawn(Self::start_timeout(command_tx.clone(), max_rtt));
+                            tokio::spawn(Self::start_timeout(command_tx.clone(), request.timeout));
                             timer_running = true;
                         }
                     }
@@ -286,7 +257,7 @@ impl PingerBackend {
                         } else {
                             Duration::from_nanos(10)
                         };
-                        let _ = ongoing.response_channel.send(PingResult::Ok(duration));
+                        let _ = ongoing.response_channel.send(Ok(duration));
                     }
                 }
                 Input::PingTimeExceeded(response) => {
@@ -296,10 +267,10 @@ impl PingerBackend {
                         } else {
                             Duration::from_nanos(10)
                         };
-                        let _ = ongoing.response_channel.send(PingResult::TimeExceeded {
+                        let _ = ongoing.response_channel.send(Err(PingError::TimeExceeded {
                             addr: response.responder,
                             latency,
-                        });
+                        }));
                     }
                 }
                 Input::IcmpError { id, code, ty, data } => {
@@ -309,29 +280,29 @@ impl PingerBackend {
                         } else {
                             Duration::from_nanos(10)
                         };
-                        let _ = ongoing.response_channel.send(PingResult::IcmpError {
+                        let _ = ongoing.response_channel.send(Err(PingError::IcmpError {
                             ty,
                             code,
                             data,
                             responder: id.responder,
                             latency,
-                        });
+                        }));
                     }
                 }
                 Input::Timeout => {
                     let now = Instant::now();
                     let lost: Vec<_> = ongoing
                         .iter()
-                        .filter(|(_, v)| now.duration_since(v.start) > max_rtt)
+                        .filter(|(_, v)| now > v.stop)
                         .map(|(k, _)| *k)
                         .collect();
                     for k in lost.into_iter() {
                         let v = ongoing.remove(&k).unwrap();
-                        let _ = v.response_channel.send(PingResult::Timeout);
+                        let _ = v.response_channel.send(Err(PingError::Timeout));
                     }
                     if !ongoing.is_empty() {
-                        let earliest_start = ongoing.values().map(|v| v.start).min().unwrap();
-                        let delay = max_rtt - (now.duration_since(earliest_start));
+                        let earliest_timeout = ongoing.values().map(|v| v.stop).min().unwrap();
+                        let delay = earliest_timeout.duration_since(now);
                         tokio::spawn(Self::start_timeout(command_tx.clone(), delay));
                     } else {
                         timer_running = false;
@@ -350,46 +321,35 @@ pub struct Pinger {
 
 impl Pinger {
     // initialize the pinger and start the icmp and icmpv6 listeners
-    pub fn new(max_rtt: Duration, size: u16, parallelism: usize) -> Result<Self, std::io::Error> {
+    pub fn new(size: u16, parallelism: usize) -> Result<Self, std::io::Error> {
         let (command_tx, command_rx) = mpsc::channel(parallelism);
-        PingerBackend::start(max_rtt, size, command_rx, command_tx.clone())?;
+        PingerBackend::start(size, command_rx, command_tx.clone())?;
         Ok(Self { command_tx })
     }
 
-    pub async fn ping(&self, addr: Ipv4Addr, ttl: u8) -> PingResult {
+    pub async fn ping(
+        &self,
+        addr: Ipv4Addr,
+        ttl: u8,
+        timeout: Duration,
+        flow_id: u16,
+    ) -> Result<Duration, PingError> {
         let (tx, rx) = oneshot::channel();
         if self
             .command_tx
             .send(Input::PingRequest(PingRequest {
-                id_shift: None,
                 addr,
                 ttl,
+                flow_id,
+                timeout,
                 response_channel: tx,
             }))
             .await
             .is_err()
         {
-            return PingResult::BackendClosed;
+            return Err(PingError::BackendClosed);
         }
-        rx.await.unwrap_or(PingResult::BackendClosed)
-    }
-
-    pub async fn ping_with_id_shift(&self, addr: Ipv4Addr, ttl: u8, id_shift: u16) -> PingResult {
-        let (tx, rx) = oneshot::channel();
-        if self
-            .command_tx
-            .send(Input::PingRequest(PingRequest {
-                id_shift: Some(id_shift),
-                addr,
-                ttl,
-                response_channel: tx,
-            }))
-            .await
-            .is_err()
-        {
-            return PingResult::BackendClosed;
-        }
-        rx.await.unwrap_or(PingResult::BackendClosed)
+        rx.await.unwrap_or(Err(PingError::BackendClosed))
     }
 
     // TODO This has to be called to stop the backend thread

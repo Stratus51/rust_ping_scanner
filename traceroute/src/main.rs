@@ -1,9 +1,9 @@
-mod ping;
-mod traceroute;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio_ip_ping_request::ping;
+use tokio_ip_ping_request::traceroute::{self, PingError, RouteNode};
 
 struct RouteGraph {
     routes: Vec<HashMap<Ipv4Addr, (Duration, Duration)>>,
@@ -22,7 +22,7 @@ impl std::fmt::Display for RouteGraph {
 }
 
 async fn aggregate_traceroute(
-    mut rx: mpsc::Receiver<(u8, Result<traceroute::RouteNode, traceroute::Error>)>,
+    mut rx: mpsc::Receiver<(u8, Result<RouteNode, PingError>)>,
 ) -> RouteGraph {
     let mut route_data = vec![];
     while let Some((ttl, ret)) = rx.recv().await {
@@ -72,35 +72,111 @@ async fn aggregate_traceroute(
     }
 }
 
+async fn run_multi_icmp_traceroute(
+    pinger: ping::icmp::Pinger,
+    target: Ipv4Addr,
+    ttl: u8,
+    timeout: Duration,
+    attempts: u8,
+    tx: mpsc::Sender<(u8, Result<RouteNode, PingError>)>,
+) {
+    for i in 0..attempts {
+        let mut rx = traceroute::icmp_traceroute(pinger.clone(), target, ttl, timeout, i);
+        let mut i = 1;
+        while let Some(res) = rx.recv().await {
+            if tx.send((i, res)).await.is_err() {
+                return;
+            }
+            i += 1;
+        }
+    }
+}
+
+fn multi_icmp_traceroute(
+    pinger: ping::icmp::Pinger,
+    target: Ipv4Addr,
+    ttl: u8,
+    timeout: Duration,
+    attempts: u8,
+) -> mpsc::Receiver<(u8, Result<RouteNode, PingError>)> {
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(run_multi_icmp_traceroute(
+        pinger, target, ttl, timeout, attempts, tx,
+    ));
+    rx
+}
+
+async fn run_multi_paris_icmp_traceroute(
+    pinger: ping::icmp::Pinger,
+    target: Ipv4Addr,
+    ttl: u8,
+    timeout: Duration,
+    attempts: u8,
+    tx: mpsc::Sender<(u8, Result<RouteNode, PingError>)>,
+) {
+    for _ in 0..attempts {
+        let mut rx = traceroute::paris_icmp_traceroute(pinger.clone(), target, ttl, timeout, 0);
+        let mut i = 1;
+        while let Some(res) = rx.recv().await {
+            if tx.send((i, res)).await.is_err() {
+                return;
+            }
+            i += 1;
+        }
+    }
+}
+
+fn multi_paris_icmp_traceroute(
+    pinger: ping::icmp::Pinger,
+    target: Ipv4Addr,
+    ttl: u8,
+    timeout: Duration,
+    attempts: u8,
+) -> mpsc::Receiver<(u8, Result<RouteNode, PingError>)> {
+    let (tx, rx) = mpsc::channel(1);
+    tokio::spawn(run_multi_paris_icmp_traceroute(
+        pinger, target, ttl, timeout, attempts, tx,
+    ));
+    rx
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let mut args = std::env::args().skip(1);
     let target = args.next().unwrap();
     let timeout: u64 = args.next().unwrap().parse().unwrap();
+    let timeout = Duration::from_millis(timeout);
     let ttl: u8 = args.next().unwrap().parse().unwrap();
-    let pinger = ping::Pinger::new(std::time::Duration::from_secs(timeout), 64, 20).unwrap();
+    let attempts: u8 = args.next().unwrap().parse().unwrap();
+    let pinger = ping::icmp::Pinger::new(64, 20).unwrap();
 
     println!("========================================================");
+    println!("ICMP");
+    println!("========================================================");
+
+    println!("--------------------------------------------------------");
     println!("STD traceroute");
-    println!("========================================================");
-    let std_res = aggregate_traceroute(traceroute::traceroute(
+    println!("--------------------------------------------------------");
+    let res_rx = multi_icmp_traceroute(
         pinger.clone(),
         target.parse().unwrap(),
         ttl,
-        10,
-    ))
-    .await;
+        timeout,
+        attempts,
+    );
+    let std_res = aggregate_traceroute(res_rx).await;
 
-    println!("========================================================");
+    println!("--------------------------------------------------------");
     println!("Paris traceroute");
-    println!("========================================================");
-    let paris_res = aggregate_traceroute(traceroute::paris_traceroute(
+    println!("--------------------------------------------------------");
+    let res_rx = multi_paris_icmp_traceroute(
         pinger.clone(),
         target.parse().unwrap(),
         ttl,
-        10,
-    ))
-    .await;
+        timeout,
+        attempts,
+    );
+    let paris_res = aggregate_traceroute(res_rx).await;
 
     println!("========================================================");
     println!("Results");

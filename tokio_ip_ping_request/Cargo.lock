@@ -46,6 +46,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be18de09a56b60ed0edf84bc9df007e30040691af7acd1c41874faac5895bfb"
 
 [[package]]
+name = "internet_routes"
+version = "0.1.0"
+dependencies = [
+ "pnet",
+ "sys-info",
+ "tokio",
+]
+
+[[package]]
 name = "ipnetwork"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -66,9 +75,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.87"
+version = "0.2.86"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "265d751d31d6780a3f956bb5b8022feba2d94eeee5a84ba64f4212eedca42213"
+checksum = "b7282d924be3275cec7f6756ff4121987bc6481325397dde6ba3e7802b1a8b1c"
 
 [[package]]
 name = "log"
@@ -89,14 +98,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "measure_route"
-version = "0.1.0"
-dependencies = [
- "tokio",
- "tokio_ip_ping_request",
-]
-
-[[package]]
 name = "memchr"
 version = "2.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -104,32 +105,15 @@ checksum = "0ee1c47aaa256ecabcaea351eae4a9b01ef39ed810004e298d2511ed284b1525"
 
 [[package]]
 name = "once_cell"
-version = "1.7.2"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af8b08b04175473088b46763e51ee54da5f9a164bc162f615b91bc179dbf15a3"
+checksum = "4ad167a2f54e832b82dbe003a046280dceffe5227b5f79e08e363a29638cfddd"
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.5"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cf491442e4b033ed1c722cb9f0df5fcfcf4de682466c46469c36bc47dc5548a"
-
-[[package]]
-name = "ping"
-version = "0.1.0"
-dependencies = [
- "tokio",
- "tokio_ip_ping_request",
-]
-
-[[package]]
-name = "ping_scan"
-version = "0.1.0"
-dependencies = [
- "sys-info",
- "tokio",
- "tokio_ip_ping_request",
-]
+checksum = "439697af366c49a6d0a010c56a0d97685bc140ce0d377b13a2ea2aa42d64a827"
 
 [[package]]
 name = "pnet"
@@ -378,22 +362,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "tokio_ip_ping_request"
-version = "0.1.0"
-dependencies = [
- "pnet",
- "tokio",
-]
-
-[[package]]
-name = "traceroute"
-version = "0.1.0"
-dependencies = [
- "tokio",
- "tokio_ip_ping_request",
 ]
 
 [[package]]
