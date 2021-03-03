@@ -1,15 +1,10 @@
+use super::EncodableConfiguration;
+use crate::deprecated::u32_sampling_iterator;
+use crate::deprecated::u32_sampling_iterator::U32SamplingIterator;
 use crate::internet::ip_is_valid;
 use crate::ping::icmp::Pinger;
-use crate::u32_sampling_iterator;
-use crate::u32_sampling_iterator::U32SamplingIterator;
 use std::convert::TryInto;
 use std::time::Duration;
-
-// TODO Add start date
-// TODO Add source IP
-// TODO Do something JSON based instead
-// TODO Add first byte as version on u8 (for cross version compatible parser/converter)
-// TODO Add conf length on first u32 to be able to skip config, for simpler parsers
 
 fn field_from_args<T: std::str::FromStr>(args: &[String], field_name: &str) -> Result<T, String>
 where
@@ -79,7 +74,7 @@ impl PingConfiguration {
         data.concat()
     }
 
-    pub fn decode(mut data: &[u8]) -> Result<(Self, usize), String> {
+    pub fn decode(mut data: &[u8]) -> Result<(Self, usize), Error> {
         let tot_size = read_le_u32(&mut data);
         let timeout = read_le_u64(&mut data);
         let size = read_le_u16(&mut data);
@@ -87,10 +82,10 @@ impl PingConfiguration {
         let ttl = data[0];
         let expected_size = 8 + 2 + 4 + 1;
         if tot_size as usize != expected_size {
-            return Err(format!(
-                "Bad tot_size value: {} != {}",
-                tot_size, expected_size
-            ));
+            return Err(Error::BadPingConfigurationSize(BadSize {
+                size_from_meta: tot_size as usize,
+                real_size: expected_size,
+            }));
         }
         Ok((
             Self {
@@ -191,7 +186,7 @@ impl IteratorConfiguration {
         data.concat()
     }
 
-    pub fn decode(mut data: &[u8]) -> Result<(Self, usize), String> {
+    pub fn decode(mut data: &[u8]) -> Result<(Self, usize), Error> {
         let tot_size = read_le_u32(&mut data);
         let ty = data[0];
         data = &data[1..];
@@ -199,15 +194,14 @@ impl IteratorConfiguration {
         let nb = read_le_u32(&mut data);
         let expected_size = 1 + 4 + 4;
         if tot_size as usize != expected_size {
-            return Err(format!(
-                "Bad tot_size value: {} != {}",
-                tot_size, expected_size
-            ));
+            return Err(Error::BadIteratorConfigurationSize(BadSize {
+                size_from_meta: tot_size as usize,
+                real_size: expected_size,
+            }));
         }
         Ok((
             Self {
-                ty: IteratorType::from_u8(ty)
-                    .map_err(|_| format!("Unknown iterator_type: {}", ty))?,
+                ty: IteratorType::from_u8(ty).map_err(|_| Error::UnknownIteratorType(ty))?,
                 offset,
                 nb,
             },
@@ -276,7 +270,32 @@ impl Configuration {
         })
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    pub fn generate(&self) -> Result<ConfigurationObject, String> {
+        Ok(ConfigurationObject {
+            iterator: self.iterator.generate(),
+            ping: self.ping.generate()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BadSize {
+    size_from_meta: usize,
+    real_size: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Error {
+    UnknownIteratorType(u8),
+    BadPingConfigurationSize(BadSize),
+    BadIteratorConfigurationSize(BadSize),
+    BadConfigurationSize(BadSize),
+}
+
+impl EncodableConfiguration for Configuration {
+    type Error = Error;
+
+    fn encode(&self) -> Box<[u8]> {
         let mut data: Vec<Box<[u8]>> = vec![];
         data.push(self.iterator.encode().into());
         data.push(self.ping.encode().into());
@@ -284,18 +303,16 @@ impl Configuration {
         data.push(self.out_file.as_bytes().into());
         let data_size = data.iter().map(|d| d.len()).sum::<usize>() as u32;
         data.insert(0, data_size.to_le_bytes().into());
-        data.concat()
+        data.concat().into()
     }
 
     // TODO Add proper errors, for the data feed to be able to react intelligently to data
     // starvation
-    pub fn decode(mut data: &[u8]) -> Result<(Self, usize), String> {
+    fn decode(mut data: &[u8]) -> Result<(Self, usize), Self::Error> {
         let tot_size = read_le_u32(&mut data);
-        let (iterator, iterator_size) =
-            IteratorConfiguration::decode(data).map_err(|e| format!("iterator: {}", e))?;
+        let (iterator, iterator_size) = IteratorConfiguration::decode(data)?;
         data = &data[iterator_size..];
-        let (ping, ping_size) =
-            PingConfiguration::decode(data).map_err(|e| format!("ping: {}", e))?;
+        let (ping, ping_size) = PingConfiguration::decode(data)?;
         data = &data[ping_size..];
         let out_file_size = read_le_u32(&mut data) as usize;
         let out_file = std::str::from_utf8(&data[..out_file_size])
@@ -303,7 +320,10 @@ impl Configuration {
             .to_string();
         let expected_size = iterator_size + ping_size + 4 + out_file_size;
         if tot_size as usize != expected_size {
-            return Err(format!("Bad tot size: {} != {}", tot_size, expected_size));
+            return Err(Error::BadConfigurationSize(BadSize {
+                size_from_meta: tot_size as usize,
+                real_size: expected_size,
+            }));
         }
         Ok((
             Self {
@@ -315,11 +335,31 @@ impl Configuration {
         ))
     }
 
-    pub fn generate(&self) -> Result<ConfigurationObject, String> {
-        Ok(ConfigurationObject {
-            iterator: self.iterator.generate(),
-            ping: self.ping.generate()?,
-        })
+    fn as_standard_configuration(&self) -> super::Configuration {
+        super::Configuration {
+            cursor: super::CursorConfiguration {
+                ty: match self.iterator.ty {
+                    IteratorType::Sampling => super::CursorType::Sampling,
+                    IteratorType::Sequential => super::CursorType::Sequential,
+                    IteratorType::Periodic => super::CursorType::Periodic,
+                    IteratorType::ReverseEndianSequential => {
+                        super::CursorType::ReverseEndianSequential
+                    }
+                },
+                offset: self.iterator.offset,
+                nb: self.iterator.nb,
+                native_cursor: false,
+            },
+            ping: super::PingConfiguration {
+                timeout: self.ping.timeout,
+                size: self.ping.size,
+                parallelism: self.ping.parallelism,
+                ttl: self.ping.ttl,
+            },
+            link_state_monitor: None,
+            // TODO Is that bad?
+            out_file: "".to_string(),
+        }
     }
 }
 

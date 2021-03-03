@@ -1,8 +1,10 @@
 mod configuration;
+mod cursor;
+mod deprecated;
 mod internet;
-mod u32_sampling_iterator;
 
-use configuration::Configuration;
+use configuration::{Configuration, EncodableConfiguration};
+use cursor::CursorExt;
 use internet::u32_to_ip;
 use std::convert::TryInto;
 use std::time::Duration;
@@ -22,13 +24,13 @@ pub fn decode_result(mut data: &[u8]) -> (u32, Duration) {
     (index, Duration::from_nanos(latency as u64 * 10))
 }
 
-pub struct IteratorCherryPick<Iter: Iterator<Item = u32>> {
+pub struct CursorCherryPick<Iter: Iterator<Item = u32>> {
     iter: Iter,
     index: u32,
     buffer: Vec<(u32, u32)>,
 }
 
-impl<Iter> IteratorCherryPick<Iter>
+impl<Iter> CursorCherryPick<Iter>
 where
     Iter: Iterator<Item = u32>,
 {
@@ -113,12 +115,16 @@ async fn main() {
         .seek(std::io::SeekFrom::Start(conf_size as u64))
         .await
         .unwrap();
-    let iterator = conf.iterator.generate();
-    let mut iterator_db = IteratorCherryPick::new(iterator);
+    let cursor = conf
+        .cursor
+        .generate()
+        .map_err(|_| "Empty target space!")
+        .unwrap();
+    let mut cursor_db = CursorCherryPick::new(cursor.to_iter());
     let mut buffer = [0u8; 8];
     while in_file.read_exact(&mut buffer).await.is_ok() {
         let (index, latency) = decode_result(&buffer);
-        let addr = u32_to_ip(iterator_db.get(index));
+        let addr = u32_to_ip(cursor_db.get(index));
         println!("{:>width$} => {:?}", addr, latency, width = 15);
     }
 }
