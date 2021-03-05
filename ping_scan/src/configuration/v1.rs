@@ -4,12 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::time::Duration;
 
-// TODO Add start date
 // TODO Add source IP
-// TODO Do something JSON based instead
-// TODO Add first byte as version on u8 (for cross version compatible parser/converter)
-// TODO Add conf length on first u32 to be able to skip config, for simpler parsers
-// TODO Add a field to indicate the type of output data
 
 fn read_le_u32(input: &mut &[u8]) -> u32 {
     let (int_bytes, rest) = input.split_at(std::mem::size_of::<u32>());
@@ -22,7 +17,9 @@ pub struct Configuration {
     pub cursor: super::CursorConfiguration,
     pub ping: super::PingConfiguration,
     pub link_state_monitor: Option<super::LinkStateMonitorConfiguration>,
-    // TODO Output type
+    pub cpu_load_monitor: Option<super::CpuLoadMonitorConfiguration>,
+    pub data_type: super::DataType,
+    pub start_date: u64,
     pub out_file: String,
 }
 
@@ -47,6 +44,9 @@ impl EncodableConfiguration for Configuration {
             cursor: self.cursor,
             ping: self.ping,
             link_state_monitor: self.link_state_monitor.clone(),
+            cpu_load_monitor: self.cpu_load_monitor,
+            start_date: self.start_date,
+            data_type: self.data_type,
             out_file: self.out_file.clone(),
         }
     }
@@ -55,7 +55,8 @@ impl EncodableConfiguration for Configuration {
 #[cfg(test)]
 mod test {
     use super::super::{
-        CursorConfiguration, CursorType, LinkStateMonitorConfiguration, PingConfiguration,
+        CpuLoadMonitorConfiguration, CursorConfiguration, CursorType, DataType,
+        LinkStateMonitorConfiguration, PingConfiguration,
     };
     use super::*;
     use std::net::Ipv4Addr;
@@ -83,12 +84,22 @@ mod test {
                 period: Duration::from_secs(2),
                 max_consecutive_fails: 2,
             }),
+            cpu_load_monitor: Some(CpuLoadMonitorConfiguration {
+                min: 0.8,
+                max: 0.9,
+                refresh_rate: Duration::from_secs(60),
+            }),
             ping: PingConfiguration {
                 timeout: Duration::from_secs(33),
                 size: 444,
                 parallelism: 90,
                 ttl: 34,
             },
+            data_type: DataType::PingLatency,
+            start_date: std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             out_file: "/root/plop".to_string(),
         });
 
@@ -106,12 +117,19 @@ mod test {
                 period: Duration::from_secs(20),
                 max_consecutive_fails: 5,
             }),
+            cpu_load_monitor: Some(CpuLoadMonitorConfiguration {
+                min: 0.1,
+                max: 0.2,
+                refresh_rate: Duration::from_secs(120),
+            }),
             ping: PingConfiguration {
                 timeout: Duration::from_secs(33),
                 size: 345,
                 parallelism: 4,
                 ttl: 22,
             },
+            data_type: DataType::PingLatency,
+            start_date: 0,
             out_file: "".to_string(),
         });
     }

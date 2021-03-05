@@ -336,6 +336,12 @@ impl EncodableConfiguration for Configuration {
     }
 
     fn as_standard_configuration(&self) -> super::Configuration {
+        let mut start_date = String::new();
+        println!("Please enter the start date of the scan in seconds:");
+        std::io::stdin()
+            .read_line(&mut start_date)
+            .expect("Did not enter a correct string");
+        let start_date: u64 = start_date.parse().unwrap();
         super::Configuration {
             cursor: super::CursorConfiguration {
                 ty: match self.iterator.ty {
@@ -357,6 +363,9 @@ impl EncodableConfiguration for Configuration {
                 ttl: self.ping.ttl,
             },
             link_state_monitor: None,
+            cpu_load_monitor: None,
+            data_type: super::DataType::PingLatency,
+            start_date,
             // TODO Is that bad?
             out_file: "".to_string(),
         }

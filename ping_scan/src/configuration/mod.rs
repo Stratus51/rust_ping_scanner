@@ -147,7 +147,7 @@ impl CursorConfiguration {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LinkStateMonitorConfiguration {
     pub target: Ipv4Addr,
     pub ttl: u8,
@@ -160,10 +160,10 @@ impl LinkStateMonitorConfiguration {
         let target: Ipv4Addr = field_from_args::<String>(args, "--monitor_target")?
             .parse()
             .map_err(|e| format!("Bad monitor target: {:?}", e))?;
-        let ttl: u8 = field_from_args(args, "--monitor_ttl")?;
-        let timeout: u64 = field_from_args(args, "--monitor_timeout")?;
-        let period: u64 = field_from_args(args, "--monitor_period")?;
-        let max_consecutive_fails: u8 = field_from_args(args, "--monitor_max_fails")?;
+        let ttl: u8 = field_from_args(args, "--monitor_link_ttl")?;
+        let timeout: u64 = field_from_args(args, "--monitor_link_timeout")?;
+        let period: u64 = field_from_args(args, "--monitor_link_period")?;
+        let max_consecutive_fails: u8 = field_from_args(args, "--monitor_link_max_fails")?;
 
         Ok(Self {
             target,
@@ -175,12 +175,40 @@ impl LinkStateMonitorConfiguration {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CpuLoadMonitorConfiguration {
+    pub min: f64,
+    pub max: f64,
+    pub refresh_rate: Duration,
+}
+impl CpuLoadMonitorConfiguration {
+    pub fn from_args(args: &[String]) -> Result<Self, String> {
+        let min: f64 = field_from_args(args, "--monitor_cpu_load_min")?;
+        let max: f64 = field_from_args(args, "--monitor_cpu_load_max")?;
+        let refresh_rate: u64 = field_from_args(args, "--monitor_cpu_load_refresh_rate")?;
+        let refresh_rate = Duration::from_secs(refresh_rate);
+
+        Ok(Self {
+            min,
+            max,
+            refresh_rate,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DataType {
+    PingLatency,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Configuration {
     pub cursor: CursorConfiguration,
     pub ping: PingConfiguration,
     pub link_state_monitor: Option<LinkStateMonitorConfiguration>,
-    // TODO Output type
+    pub cpu_load_monitor: Option<CpuLoadMonitorConfiguration>,
+    pub data_type: DataType,
+    pub start_date: u64,
     pub out_file: String,
 }
 
@@ -189,11 +217,18 @@ impl Configuration {
         let cursor = CursorConfiguration::from_args(args)?;
         let ping = PingConfiguration::from_args(args)?;
         let link_state_monitor = Some(LinkStateMonitorConfiguration::from_args(args)?);
+        let cpu_load_monitor = Some(CpuLoadMonitorConfiguration::from_args(args)?);
         let out_file = field_from_args(args, "--out_file")?;
         Ok(Self {
             cursor,
             ping,
             link_state_monitor,
+            cpu_load_monitor,
+            data_type: DataType::PingLatency,
+            start_date: std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             out_file,
         })
     }
@@ -205,7 +240,10 @@ impl EncodableConfiguration for Configuration {
         let data = v1::Configuration {
             cursor: self.cursor,
             ping: self.ping,
-            link_state_monitor: self.link_state_monitor.clone(),
+            link_state_monitor: self.link_state_monitor,
+            cpu_load_monitor: self.cpu_load_monitor,
+            data_type: self.data_type,
+            start_date: self.start_date,
             out_file: self.out_file.clone(),
         }
         .encode();

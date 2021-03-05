@@ -243,7 +243,11 @@ impl PingerBackend {
                                 response_channel: request.response_channel,
                             },
                         );
-                        index += 1;
+                        if index == 0xFF_FF {
+                            index = 0;
+                        } else {
+                            index += 1;
+                        }
                         if !timer_running {
                             tokio::spawn(Self::start_timeout(command_tx.clone(), request.timeout));
                             timer_running = true;
